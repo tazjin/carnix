@@ -177,13 +177,19 @@ fn main() {
             }
             let path =
                 if let Some(&(_, ref path)) = workspace_members.get(&main_cra.name) {
-                    SourceType::Path { path: path.to_path_buf() }
+                    SourceType::Path {
+                        path: base_path.to_path_buf(),
+                        workspace_member: Some(path.to_path_buf())
+                    }
                 } else {
-                    SourceType::Path { path: base_path.to_path_buf() }
+                    SourceType::Path { path: base_path.to_path_buf(), workspace_member: None }
                 };
             let mut meta = main_cra.prefetch(&mut cache, &path).unwrap();
             if let Some(src) = matches.value_of("src") {
-                meta.src = Src::Path { path: Path::new(src).to_path_buf() }
+                meta.src = Src::Path {
+                    path: Path::new(src).to_path_buf(),
+                    workspace_member: None,
+                }
             }
             Some(meta)
         } else {
@@ -279,7 +285,17 @@ fn main() {
                 let is_src = if let Some(&(_, ref path)) = workspace_members.get(&cra.name) {
 
                     if let SourceType::None = source_type {
-                        source_type = SourceType::Path { path: path.to_path_buf() };
+                        if is_workspace {
+                            source_type = SourceType::Path {
+                                path: base_path.to_path_buf(),
+                                workspace_member: Some(path.to_path_buf()),
+                            }
+                        } else {
+                            source_type = SourceType::Path {
+                                path: path.to_path_buf(),
+                                workspace_member: None,
+                            }
+                        }
                     }
                     !is_workspace
 
@@ -288,7 +304,10 @@ fn main() {
                     if let Some(ref p) = dep.path {
                         debug!("path {:?}", p);
                         if let SourceType::None = source_type {
-                            source_type = SourceType::Path { path: p.to_path_buf() };
+                            source_type = SourceType::Path {
+                                path: p.to_path_buf(),
+                                workspace_member: None,
+                            };
                         }
                     }
                     false
@@ -300,7 +319,10 @@ fn main() {
                             if let Some(ref p) = dep.path {
                                 debug!("path {:?}", p);
                                 if let SourceType::None = source_type {
-                                    source_type = SourceType::Path { path: p.to_path_buf() };
+                                    source_type = SourceType::Path {
+                                        path: p.to_path_buf(),
+                                        workspace_member: None,
+                                    };
                                 }
                                 break
                             }
@@ -318,7 +340,10 @@ fn main() {
                     if let Ok(mut prefetch) = cra.prefetch(&mut cache, &source_type) {
                         if is_src {
                             if let Some(src) = matches.value_of("src") {
-                                prefetch.src = Src::Path { path: Path::new(src).to_path_buf() }
+                                prefetch.src = Src::Path {
+                                    path: Path::new(src).to_path_buf(),
+                                    workspace_member: None,
+                                }
                             }
                         }
                         Some(prefetch)

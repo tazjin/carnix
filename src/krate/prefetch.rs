@@ -1,25 +1,42 @@
 use super::*;
 use std::io::Read;
 use toml::Value;
+use std::path::PathBuf;
 
 impl Crate {
 
     pub fn prefetch(&self, cache: &mut Cache, source_type: &SourceType) -> Result<Meta, Error> {
+        let mut cargo_toml_path = PathBuf::new();
         let prefetch = match *source_type {
-            SourceType::Path { ref path } => {
+            SourceType::Path { ref path, ref workspace_member } => {
                 debug!("path: {:?}", path);
+                cargo_toml_path.push(path);
+                if let Some(ref mem) = *workspace_member {
+                    cargo_toml_path.push(mem);
+                }
                 Prefetch {
                     path: path.to_path_buf(),
-                    prefetch: Src::Path { path: path.to_path_buf() }
+                    prefetch: Src::Path {
+                        path: path.to_path_buf(),
+                        workspace_member: workspace_member.as_ref().map(|x| x.to_path_buf()),
+                    }
                 }
             }
-            SourceType::CratesIO => self.prefetch_path(cache)?,
-            SourceType::Git { ref url, ref rev } => self.prefetch_git(url, rev, cache)?,
+            SourceType::CratesIO => {
+                let prefetch = self.prefetch_path(cache)?;
+                cargo_toml_path.push(&prefetch.path);
+                prefetch
+            },
+            SourceType::Git { ref url, ref rev } => {
+                let prefetch = self.prefetch_git(url, rev, cache)?;
+                cargo_toml_path.push(&prefetch.path);
+                prefetch
+            },
             _ => panic!("unsupported source")
         };
 
         debug!("src = {:?}", prefetch.prefetch);
-        let cargo_toml_path = prefetch.path.join("Cargo.toml");
+        cargo_toml_path.push("Cargo.toml");
         debug!("cargo_toml: {:?}", cargo_toml_path);
 
         let mut f = std::fs::File::open(&cargo_toml_path)?;

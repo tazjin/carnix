@@ -59,7 +59,7 @@ pub struct Dep {
 #[derive(Debug, PartialEq, Eq, Clone, Serialize, Deserialize)]
 pub enum Src {
     Crate { sha256: String },
-    Path { path: PathBuf },
+    Path { path: PathBuf, workspace_member: Option<PathBuf> },
     Git(GitFetch),
 }
 
@@ -68,7 +68,7 @@ pub enum SourceType {
     CratesIO,
     None,
     Git { url: String, rev: String },
-    Path { path: PathBuf }
+    Path { path: PathBuf, workspace_member: Option<PathBuf> }
 }
 
 #[derive(Debug, PartialEq, Eq, Clone)]
@@ -382,7 +382,7 @@ impl Crate {
             Src::Crate { ref sha256 } => {
                 writeln!(w, "{}  sha256 = \"{}\";", indent, sha256)?;
             }
-            Src::Path { ref path } => {
+            Src::Path { ref path, ref workspace_member } => {
                 let s = path.to_string_lossy();
 
                 let mut filter_source = String::new();
@@ -398,17 +398,35 @@ impl Crate {
                 }
 
                 if s.len() > 0 {
-                    if s.chars().any(|c| c == '/') {
-                        filter_source.push_str(&s)
-                    } else {
-                        filter_source.push_str("./");
-                        filter_source.push_str(&s);
+                    let mut comp = Vec::new();
+                    for c in path.components() {
+                        use std::path::Component::*;
+                        match c {
+                            RootDir => comp.push(RootDir),
+                            Prefix(c) => comp.push(Prefix(c)),
+                            CurDir => {}
+                            ParentDir => {comp.pop();}
+                            Normal(c) => comp.push(Normal(c))
+                        }
                     }
+                    let mut path = PathBuf::new();
+                    path.extend(comp.iter());
+                    if path.is_relative() {
+                        if comp.len() == 1 {
+                            filter_source.push_str("./")
+                        } else if comp.len() == 0 {
+                            filter_source.push_str("./.")
+                        }
+                    }
+                    filter_source.push_str(&path.to_string_lossy());
                 } else {
                     filter_source.push_str("./.");
                 }
 
-                writeln!(w, "{}  src = {};", indent, filter_source)?
+                writeln!(w, "{}  src = {};", indent, filter_source)?;
+                if let Some(ref ws) = *workspace_member {
+                    writeln!(w, "{}  workspace_member = \"{}\";", indent, ws.to_string_lossy())?;
+                }
             }
             Src::Git(ref git) => {
                 writeln!(w, "{}  src = fetchgit {{", indent)?;
@@ -451,12 +469,7 @@ impl Crate {
             writeln!(w, "];")?;
         }
         if meta.build.len() > 0 {
-            if let Src::Path { ref path } = meta.src {
-                let s = path.to_string_lossy();
-                writeln!(w, "{}  build = \"{}/{}\";", indent, s, meta.build)?;
-            } else {
-                writeln!(w, "{}  build = \"{}\";", indent, meta.build)?;
-            }
+            writeln!(w, "{}  build = \"{}\";", indent, meta.build)?;
         }
         writeln!(w, "{}  inherit dependencies buildDependencies features;", indent)?;
         writeln!(w, "{}}};", indent)?;
