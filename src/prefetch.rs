@@ -1,7 +1,18 @@
-use super::*;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Read;
 use toml::Value;
 use std::path::PathBuf;
+use std;
+use toml;
+use std::str::from_utf8;
+use std::process::Command;
+use std::path::Path;
+use serde_json;
+use regex::Regex;
+
+use {Error, ErrorKind};
+use cache::*;
+use krate::*;
 
 impl Crate {
 
@@ -112,6 +123,88 @@ impl Crate {
             authors,
         })
     }
+
+
+    fn prefetch_path(&self, cache: &mut Cache) -> Result<Prefetch, std::io::Error> {
+
+        let version = if self.subpatch.len() > 0 {
+            format!("{}.{}.{}-{}", self.major, self.minor, self.patch, self.subpatch)
+        } else {
+            format!("{}.{}.{}", self.major, self.minor, self.patch)
+        };
+        let url = format!("https://crates.io/api/v1/crates/{}/{}/download", self.name, version);
+
+        let from_cache = cache.get(&url);
+        if let Some(ref prefetch) = from_cache {
+            if std::fs::metadata(&prefetch.path).is_ok() {
+                return Ok(prefetch.clone())
+            }
+        }
+
+        println!("Prefetching {}-{}", self.name, version);
+        debug!("url = {:?}", url);
+        let prefetch = Command::new("nix-prefetch-url")
+            .args(&[ &url, "--unpack", "--name", &(self.name.clone() + "-" + &version) ][..])
+            .output()?;
+
+        let sha256:String = from_utf8(&prefetch.stdout).unwrap().trim().to_string();
+        let path = get_path(&prefetch.stderr);
+        let pre = Prefetch {
+            prefetch: Src::Crate { sha256 },
+            path: Path::new(path).to_path_buf(),
+        };
+        if from_cache.is_none() {
+            cache.insert(&url, &pre);
+        }
+        Ok(pre)
+    }
+
+
+
+
+    fn prefetch_git(&self, url: &str, rev: &str, cache: &mut Cache) -> Result<Prefetch, Error> {
+        let cached_url = format!("git+{}#{}", url, rev);
+        let from_cache = cache.get(&cached_url);
+        if let Some(ref prefetch) = from_cache {
+            if std::fs::metadata(&prefetch.path).is_ok() {
+                return Ok(prefetch.clone())
+            }
+        }
+
+        println!("Prefetching {} ({})", self.name, cached_url);
+        debug!("cached_url = {:?}", cached_url);
+        let prefetch = Command::new("nix-prefetch-git")
+            .args(&[ "--url", url, "--rev", rev ])
+            .output();
+
+        match prefetch {
+            Err(e) => {
+                error!("error with nix-prefetch-git: {}", e);
+                Err(e.into())
+            }
+            Ok(prefetch) => {
+
+                if prefetch.status.success() {
+
+                    let prefetch_json: GitFetch = serde_json::from_str(from_utf8(&prefetch.stdout).unwrap()).unwrap();
+                    let path = get_path(&prefetch.stderr);
+
+                    let pre = Prefetch {
+                        prefetch: Src::Git(prefetch_json),
+                        path: Path::new(path).to_path_buf()
+                    };
+                    if from_cache.is_none() {
+                        cache.insert(&cached_url, &pre);
+                    }
+                    Ok(pre)
+                } else {
+                    error!("nix-prefetch-git exited with error code {:?}: {:?}", prefetch.status, prefetch.stderr);
+                    Err(ErrorKind::NixPrefetchGitFailed.into())
+                }
+            }
+        }
+    }
+
 }
 
 fn crate_file(v: &BTreeMap<String, toml::Value>) -> String {
@@ -235,4 +328,17 @@ fn declared_dependencies(v: &BTreeMap<String, toml::Value>) -> BTreeSet<String> 
         }
     }
     declared_dependencies
+}
+
+fn get_path(stderr: &[u8]) -> &str {
+    debug!("{:?}", from_utf8(&stderr));
+    let path_re = Regex::new("path is (‘|')?([^’'\n]*)(’|')?").unwrap();
+    let prefetch_stderr = from_utf8(&stderr).expect("stderr of nix-prefetch-url not utf8");
+    let cap = if let Some(cap) = path_re.captures(prefetch_stderr) {
+        cap
+    } else {
+        eprintln!("nix-prefetch-url returned:\n{}", prefetch_stderr);
+        std::process::exit(1)
+    };
+    cap.get(2).unwrap().as_str()
 }
