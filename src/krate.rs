@@ -3,7 +3,8 @@ use toml;
 use std::path::{Path, PathBuf};
 use regex::Regex;
 use std;
-use Error;
+use {Error, ErrorKind};
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, PartialOrd, Ord)]
 pub struct Crate {
     pub name: String,
@@ -88,6 +89,16 @@ impl FromStr for Crate {
             subpatch: cap.get(6).map(|x| x.as_str().to_string()).unwrap_or(String::new()),
             found_in_lock: true,
         })
+    }
+}
+
+impl std::fmt::Display for Crate {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter) -> Result<(), std::fmt::Error> {
+        write!(fmt, "{}-{}.{}.{}", self.name, self.major, self.minor, self.patch)?;
+        if !self.subpatch.is_empty() {
+            write!(fmt, "-{}", self.subpatch)?
+        }
+        Ok(())
     }
 }
 
@@ -206,10 +217,13 @@ pub fn find_cargo_lock() -> Result<PathBuf, Error> {
     let mut current = std::env::current_dir()?;
     loop {
         current.push("Cargo.lock");
+        debug!("current = {:?}", current);
         if std::fs::metadata(&current).is_ok() {
-            break;
+            return Ok(current)
         }
         current.pop();
+        if !current.pop() {
+            return Err(ErrorKind::NoCargoLock.into())
+        }
     }
-    Ok(current)
 }

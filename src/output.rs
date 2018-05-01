@@ -318,6 +318,36 @@ fn local_source_type<P:AsRef<Path>>(
     loc
 }
 
+fn resolve_replaces(packages: &mut Vec<toml::Value>) -> Vec<toml::Value> {
+    // resolve all "replace = "
+    let mut replace = BTreeMap::new();
+    for pack in packages.iter() {
+        if let (Some(repl), Some(source)) = (pack.get("replace"), pack.get("source")) {
+            replace.insert(
+                repl.as_str().unwrap().to_string(),
+                source.as_str().unwrap().to_string(),
+            );
+        }
+    }
+    let mut fix = Vec::new();
+    for mut pack in packages.drain(..) {
+        if pack.get("replace").is_none() {
+            let s = format!(
+                "{} {}",
+                pack.get("name").unwrap().as_str().unwrap(),
+                pack.get("version").unwrap().as_str().unwrap()
+            );
+            if let Some(repl) = replace.get(&s) {
+                let mut pack = pack.as_table_mut().unwrap();
+                pack.insert("source".to_string(), toml::Value::String(repl.clone()));
+                debug!("replaced {:?}", pack);
+            }
+            fix.push(pack)
+        }
+    }
+    fix
+}
+
 fn fixpoint<P: AsRef<Path>>(
     cache: &mut Cache,
     src: Option<P>,
@@ -328,43 +358,14 @@ fn fixpoint<P: AsRef<Path>>(
 ) -> Result<BTreeMap<Crate, Meta>, Error> {
     let mut all_packages = BTreeMap::new();
 
-    let mut unknown_packages = Vec::new();
     // Here we need to compute a fixpoint of dependencies to resolve
     // all sources. This is because local sources are sometimes
     // referenced not only from this package's Cargo.toml, but from
     // this package's (transitive) dependencies, in which case the
     // only way to know where they are is to go down the dependency
     // tree (because they are not in the Cargo.lock).
-    let mut packages_fixpoint = packages.clone();
-    {
-        // resolve all "replace = "
-        let mut replace = BTreeMap::new();
-        for pack in packages_fixpoint.iter() {
-            if let (Some(repl), Some(source)) = (pack.get("replace"), pack.get("source")) {
-                replace.insert(
-                    repl.as_str().unwrap().to_string(),
-                    source.as_str().unwrap().to_string(),
-                );
-            }
-        }
-        let mut fix = Vec::new();
-        for mut pack in packages_fixpoint.drain(..) {
-            if pack.get("replace").is_none() {
-                let s = format!(
-                    "{} {}",
-                    pack.get("name").unwrap().as_str().unwrap(),
-                    pack.get("version").unwrap().as_str().unwrap()
-                );
-                if let Some(repl) = replace.get(&s) {
-                    let mut pack = pack.as_table_mut().unwrap();
-                    pack.insert("source".to_string(), toml::Value::String(repl.clone()));
-                    debug!("replaced {:?}", pack);
-                }
-                fix.push(pack)
-            }
-        }
-        packages_fixpoint = fix
-    }
+    let mut packages_fixpoint = resolve_replaces(packages);
+    let mut unknown_packages = packages; // empty at this point.
 
     while !packages_fixpoint.is_empty() {
         let mut at_least_one_resolved = false;
@@ -386,22 +387,9 @@ fn fixpoint<P: AsRef<Path>>(
                 debug!("path = {:?}", source_type);
                 if source_type != SourceType::None {
                     if let Ok(mut prefetch) = cra.prefetch(cache, &source_type) {
-                        /*if let Some(ref src) = src {
-                            if crate_type.is_workspace() {
-                                prefetch.src = Src::Path {
-                                    path: src.as_ref().to_path_buf(),
-                                    workspace_member: Some(crate_type.get(&cra.name).unwrap().1.to_path_buf()),
-                                }
-                            } else {
-                                prefetch.src = Src::Path {
-                                    path: src.as_ref().to_path_buf(),
-                                    workspace_member: None,
-                                }
-                            }
-                        }*/
                         Some(prefetch)
                     } else {
-                        return Err(ErrorKind::CouldNotPrefetch.into());
+                        return Err(ErrorKind::PrefetchFailed(cra).into());
                     }
                 } else {
                     None

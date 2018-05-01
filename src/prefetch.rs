@@ -9,7 +9,7 @@ use std::process::Command;
 use std::path::Path;
 use serde_json;
 use regex::Regex;
-
+use std::borrow::Cow;
 use {Error, ErrorKind};
 use cache::*;
 use krate::*;
@@ -62,27 +62,40 @@ impl Crate {
         };
         let v = v.as_table_mut().expect("v not a table");
 
-
-        let (dependencies, implied) = make_dependencies(&prefetch.path, v.get("dependencies"), v.get("features"));
-        let (build_dependencies, _) = make_dependencies(&prefetch.path, v.get("build-dependencies"), None);
-        debug!("dependencies of {:?} = {:?}", self.name, dependencies);
-
-        let mut target_dependencies = Vec::new();
-        if let Some(target) = v.remove("target") {
-            let target = if let Value::Table(target) = target {
-                target
-            } else {
-                panic!("target not a table")
+        let (dependencies, implied, build_dependencies, target_dependencies) = {
+            let prefetch_path = match &prefetch.prefetch {
+                &Src::Path { ref path, ref workspace_member } => {
+                    if let Some(ref ws) = *workspace_member {
+                        let mut p = path.to_path_buf();
+                        p.push(ws);
+                        Cow::Owned(p)
+                    } else {
+                        Cow::Borrowed(path)
+                    }
+                },
+                _ => Cow::Borrowed(&prefetch.path)
             };
-            debug!("target = {:?}", target);
-            for (a, b) in target {
-                debug!("a = {:?}", a);
-                let (dependencies, _) = make_dependencies(&prefetch.path, b.get("dependencies"), None);
-                target_dependencies.push((a, dependencies))
-            }
-            debug!("target_deps {:?}", target_dependencies);
-        }
+            let (dependencies, implied) = make_dependencies(&prefetch_path, v.get("dependencies"), v.get("features"));
+            let (build_dependencies, _) = make_dependencies(&prefetch_path, v.get("build-dependencies"), None);
+            debug!("dependencies of {:?} = {:?}", self.name, dependencies);
 
+            let mut target_dependencies = Vec::new();
+            if let Some(target) = v.remove("target") {
+                let target = if let Value::Table(target) = target {
+                    target
+                } else {
+                    panic!("target not a table")
+                };
+                debug!("target = {:?}", target);
+                for (a, b) in target {
+                    debug!("a = {:?}", a);
+                    let (dependencies, _) = make_dependencies(&prefetch_path, b.get("dependencies"), None);
+                    target_dependencies.push((a, dependencies))
+                }
+                debug!("target_deps {:?}", target_dependencies);
+            }
+            (dependencies, implied, build_dependencies, target_dependencies)
+        };
         // Grab the authors from Cargo.toml, so we can create the
         // CARGO_PKG_AUTHORS environment variable at build time.
         let authors = v.get("package")
@@ -96,11 +109,7 @@ impl Crate {
             .unwrap_or_else(Vec::new);
 
         let (default_features, declared_features) = features(v);
-        let include = if let Some(inc) = v.get("package").unwrap().as_table().unwrap().get("include") {
-            Some(inc.as_array().unwrap().into_iter().map(|x| x.as_str().unwrap().to_string()).collect())
-        } else {
-            None
-        };
+        let include = include(v);
         Ok(Meta {
             src: prefetch.prefetch,
             include,
@@ -207,6 +216,19 @@ impl Crate {
 
 }
 
+fn include(v: &BTreeMap<String, toml::Value>) -> Option<Vec<String>> {
+    if let Some(inc) = v.get("package") {
+        if let Some(inc) = inc.as_table() {
+            if let Some(inc) = inc.get("include") {
+                if let Some(inc) = inc.as_array() {
+                    return Some(inc.into_iter().filter_map(|x| x.as_str().map(|x| x.to_string())).collect())
+                }
+            }
+        }
+    }
+    None
+}
+
 fn crate_file(v: &BTreeMap<String, toml::Value>) -> String {
     if let Some(crate_file) = v.get("lib") {
         let crate_file = crate_file.as_table().unwrap();
@@ -283,12 +305,12 @@ fn is_plugin(v: &BTreeMap<String, toml::Value>) -> bool {
 }
 
 fn build(v: &BTreeMap<String, toml::Value>) -> String {
-    let package = v.get("package").unwrap();
-    if let Some(build) = package.as_table().unwrap().get("build") {
-        build.as_str().unwrap().to_string()
-    } else {
-        String::new()
+    if let Some(package) = v.get("package") {
+        if let Some(build) = package.as_table().unwrap().get("build") {
+            return build.as_str().unwrap().to_string()
+        }
     }
+    String::new()
 }
 
 fn features(v: &BTreeMap<String, toml::Value>) -> (Vec<String>, BTreeSet<String>) {
