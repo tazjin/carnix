@@ -1,2 +1,2 @@
 language: nix
-script: nix-build -A carnix_0_6_8
+script: nix-build -A carnix_0_6_9

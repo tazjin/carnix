@@ -45,7 +45,7 @@ let kernel = buildPlatform.parsed.kernel.name;
     ) [] (builtins.attrNames feat);
 in
 rec {
-  carnix = f: carnix_0_6_8 { features = carnix_0_6_8_features { carnix_0_6_8 = f; }; };
+  carnix = f: carnix_0_6_9 { features = carnix_0_6_9_features { carnix_0_6_9 = f; }; };
   aho_corasick_0_6_4_ = { dependencies?[], buildDependencies?[], features?[] }: buildRustCrate {
     crateName = "aho-corasick";
     version = "0.6.4";
@@ -91,9 +91,9 @@ rec {
     sha256 = "0p4b3nr0s5nda2qmm7xdhnvh4lkqk3xd8l9ffmwbvqw137vx7mj1";
     inherit dependencies buildDependencies features;
   };
-  carnix_0_6_8_ = { dependencies?[], buildDependencies?[], features?[] }: buildRustCrate {
+  carnix_0_6_9_ = { dependencies?[], buildDependencies?[], features?[] }: buildRustCrate {
     crateName = "carnix";
-    version = "0.6.8";
+    version = "0.6.9";
     authors = [ "pe@pijul.org <pe@pijul.org>" ];
     src = include [ "Cargo.toml" "src/main.rs" "src/cache.rs" "src/cfg.rs" "src/krate/mod.rs" "src/krate/prefetch.rs" "src/preamble.nix" ] ./.;
     inherit dependencies buildDependencies features;
@@ -653,11 +653,11 @@ rec {
       (f.bitflags_1_0_1.default or false) ||
       (bitflags_1_0_1.default or false);
   }) [];
-  carnix_0_6_8 = { features?(carnix_0_6_8_features {}) }: carnix_0_6_8_ {
+  carnix_0_6_9 = { features?(carnix_0_6_9_features {}) }: carnix_0_6_9_ {
     dependencies = mapFeatures features ([ clap_2_31_2 env_logger_0_5_7 error_chain_0_11_0 itertools_0_7_8 log_0_4_1 nom_3_2_1 regex_0_2_10 rusqlite_0_13_0 serde_1_0_37 serde_derive_1_0_37 serde_json_1_0_13 tempdir_0_3_7 toml_0_4_6 ]);
   };
-  carnix_0_6_8_features = f: updateFeatures f (rec {
-    carnix_0_6_8.default = (f.carnix_0_6_8.default or true);
+  carnix_0_6_9_features = f: updateFeatures f (rec {
+    carnix_0_6_9.default = (f.carnix_0_6_9.default or true);
     clap_2_31_2.default = true;
     env_logger_0_5_7.default = true;
     error_chain_0_11_0.default = true;
