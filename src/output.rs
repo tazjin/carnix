@@ -254,7 +254,7 @@ pub fn generate_nix<W: Write, P: AsRef<Path>, Q: AsRef<Path>>(
         }
     }
 
-    output(standalone, workspace_members, all_packages, nix_file)?;
+    output(standalone, workspace_members, all_packages, base_path, nix_file)?;
     Ok(())
 }
 
@@ -457,6 +457,7 @@ fn output<W: Write>(
     standalone: bool,
     workspace_members: CrateType,
     all_packages: BTreeMap<Crate, Meta>,
+    root_prefix: &Path,
     mut nix_file: W,
 ) -> Result<(), Error> {
     // And output.
@@ -508,7 +509,7 @@ fn output<W: Write>(
     nix_file.write_all(&all)?;
     nix_file.write_all(b";\n  ")?;
     for (cra, meta) in all_packages.iter() {
-        cra.output_package(&mut nix_file, 2, &meta, is_first_package)?;
+        cra.output_package(root_prefix, &mut nix_file, 2, &meta, is_first_package)?;
         is_first_package = false;
         names.insert(cra.name.clone());
     }
@@ -870,6 +871,7 @@ impl Crate {
 
     pub fn output_package<W: Write>(
         &self,
+        root_prefix: &Path,
         mut w: W,
         n_indent: usize,
         meta: &Meta,
@@ -910,49 +912,40 @@ impl Crate {
                 ref path,
                 ref workspace_member,
             } => {
+                let path = path.canonicalize()?;
+                let path = if let Ok(path) = path.strip_prefix(root_prefix) {
+                    path
+                } else {
+                    &path
+                };
                 let s = path.to_string_lossy();
 
                 let mut filter_source = String::new();
-                if let Some(ref include) = meta.include {
-                    filter_source.push_str("include [ ");
-                    for file in include.iter() {
-                        filter_source.push_str("\"");
-                        filter_source.push_str(file);
-                        filter_source.push_str("\"");
-                        filter_source.push_str(" ");
-                    }
-                    filter_source.push_str("] ");
-                }
-
-                if s.len() > 0 {
-                    let mut comp = Vec::new();
-                    for c in path.components() {
-                        use std::path::Component::*;
-                        match c {
-                            RootDir => comp.push(RootDir),
-                            Prefix(c) => comp.push(Prefix(c)),
-                            CurDir => {}
-                            ParentDir => {
-                                comp.pop();
+                if let Ok(fsmeta) = std::fs::metadata(path) {
+                    if fsmeta.is_dir() {
+                        if let Some(ref include) = meta.include {
+                            filter_source.push_str("include [ ");
+                            for file in include.iter() {
+                                filter_source.push_str("\"");
+                                filter_source.push_str(file);
+                                filter_source.push_str("\"");
+                                filter_source.push_str(" ");
                             }
-                            Normal(c) => comp.push(Normal(c)),
+                            filter_source.push_str("] ");
                         }
                     }
-                    let mut path = PathBuf::new();
-                    path.extend(comp.iter());
-                    if path.is_relative() {
-                        if comp.len() == 1 {
-                            filter_source.push_str("./")
-                        } else if comp.len() == 0 {
-                            filter_source.push_str("./.")
-                        }
+                }
+                if s.is_empty() {
+                    filter_source.push_str("./.");
+                } else {
+                    if !s.contains("/") {
+                        filter_source.push_str("./");
                     }
                     filter_source.push_str(&path.to_string_lossy());
-                } else {
-                    filter_source.push_str("./.");
                 }
 
                 writeln!(w, "{}  src = {};", indent, filter_source)?;
+
                 if let Some(ref ws) = *workspace_member {
                     writeln!(
                         w,
