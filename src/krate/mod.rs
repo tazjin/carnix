@@ -451,7 +451,12 @@ impl Crate {
             writeln!(w, "];")?;
         }
         if meta.build.len() > 0 {
-            writeln!(w, "{}  build = \"{}\";", indent, meta.build)?;
+            if let Src::Path { ref path } = meta.src {
+                let s = path.to_string_lossy();
+                writeln!(w, "{}  build = \"{}/{}\";", indent, s, meta.build)?;
+            } else {
+                writeln!(w, "{}  build = \"{}\";", indent, meta.build)?;
+            }
         }
         writeln!(w, "{}  inherit dependencies buildDependencies features;", indent)?;
         writeln!(w, "{}}};", indent)?;
@@ -508,24 +513,33 @@ impl Crate {
         debug!("cached_url = {:?}", cached_url);
         let prefetch = Command::new("nix-prefetch-git")
             .args(&[ "--url", url, "--rev", rev ])
-            .output()?;
+            .output();
 
-        if prefetch.status.success() {
-
-            let prefetch_json: GitFetch = serde_json::from_str(from_utf8(&prefetch.stdout).unwrap()).unwrap();
-            let path = get_path(&prefetch.stderr);
-
-            let pre = Prefetch {
-                prefetch: Src::Git(prefetch_json),
-                path: Path::new(path).to_path_buf()
-            };
-            if from_cache.is_none() {
-                cache.insert(&cached_url, &pre);
+        match prefetch {
+            Err(e) => {
+                error!("error with nix-prefetch-git: {}", e);
+                Err(e.into())
             }
-            Ok(pre)
-        } else {
-            error!("nix-prefetch-git exited with error code {:?}: {:?}", prefetch.status, prefetch.stderr);
-            Err(ErrorKind::NixPrefetchGitFailed.into())
+            Ok(prefetch) => {
+
+                if prefetch.status.success() {
+
+                    let prefetch_json: GitFetch = serde_json::from_str(from_utf8(&prefetch.stdout).unwrap()).unwrap();
+                    let path = get_path(&prefetch.stderr);
+
+                    let pre = Prefetch {
+                        prefetch: Src::Git(prefetch_json),
+                        path: Path::new(path).to_path_buf()
+                    };
+                    if from_cache.is_none() {
+                        cache.insert(&cached_url, &pre);
+                    }
+                    Ok(pre)
+                } else {
+                    error!("nix-prefetch-git exited with error code {:?}: {:?}", prefetch.status, prefetch.stderr);
+                    Err(ErrorKind::NixPrefetchGitFailed.into())
+                }
+            }
         }
     }
 }

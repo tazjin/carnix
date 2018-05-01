@@ -112,15 +112,13 @@ fn crate_file(v: &BTreeMap<String, toml::Value>) -> String {
 
 fn crate_type(v: &BTreeMap<String, toml::Value>) -> Option<String> {
     if let Some(crate_file) = v.get("lib") {
-        let crate_file = crate_file.as_table().unwrap();
-        if let Some(crate_type) = crate_file.get("crate-type") {
-            Some(crate_type.as_str().unwrap().to_string())
-        } else {
-            None
+        if let Some(crate_file) = crate_file.as_table() {
+            if let Some(crate_type) = crate_file.get("crate-type") {
+                return Some(crate_type.as_str().unwrap().to_string())
+            }
         }
-    } else {
-        None
     }
+    None
 }
 
 fn lib_name(v: &BTreeMap<String, toml::Value>) -> String {

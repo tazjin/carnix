@@ -315,13 +315,16 @@ fn main() {
                 };
                 debug!("path = {:?}", source_type);
                 if source_type != SourceType::None {
-                    let mut prefetch = cra.prefetch(&mut cache, &source_type).ok();
-                    if is_src {
-                        if let (&mut Some(ref mut prefetch), Some(src)) = (&mut prefetch, matches.value_of("src")) {
-                            prefetch.src = Src::Path { path: Path::new(src).to_path_buf() }
+                    if let Ok(mut prefetch) = cra.prefetch(&mut cache, &source_type) {
+                        if is_src {
+                            if let Some(src) = matches.value_of("src") {
+                                prefetch.src = Src::Path { path: Path::new(src).to_path_buf() }
+                            }
                         }
+                        Some(prefetch)
+                    } else {
+                        return
                     }
-                    prefetch
                 } else {
                     None
                 }
