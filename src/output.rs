@@ -17,8 +17,7 @@ struct FeatName<'a>(&'a str);
 impl<'a> std::fmt::Display for FeatName<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         if self.0.chars().all(|x| {
-            (x >= '0' && x <= '9') || (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') || x == '_'
-                || x == '-'
+            (x >= 'a' && x <= 'z') || (x >= 'A' && x <= 'Z') || x == '_'
         }) {
             write!(f, "{}", self.0)
         } else {
