@@ -476,7 +476,7 @@ fn output<W: Write>(
     )?;
 
     if standalone {
-        nix_file.write_all(b"with import <nixpkgs> {};\n")?;
+        nix_file.write_all(b"{ pkgs ? import <nixpkgs> {}}: with pkgs;\n\n")?;
     } else {
         nix_file.write_all(b"{ lib, buildPlatform, buildRustCrate, fetchgit }:\n")?;
     }
