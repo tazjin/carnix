@@ -8,6 +8,10 @@ The original source repository is
 [here](https://nest.pijul.com/pmeunier/carnix), but does not contain
 versions older than `0.7.2`.
 
+Various fixes for smaller issues in Carnix are being added on the
+`devel`-branch of this repository. They will be submitted to the
+upstream repository once it is back online.
+
 ~~Carnix was originally released by [Pijul][], however the [old source
 repository][] was never updated after version `0.5` and is now offline
 entirely.~~
