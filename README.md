@@ -17,6 +17,11 @@ mirroring these into this git repository to make the source code
 easily accessible, but for now there won't be any changes happening
 here directly.~~
 
+## Reporting issues
+
+Issues should be reported in the [discussions][] in the source
+repository.
+
 ## "Changelog"
 
 Based on the `git diff` output between the versions I've attempted to
@@ -87,3 +92,4 @@ behind Pijul!
 [old source repository]: https://nest.pijul.com/pmeunier/nix-rust
 [crates.io]: https://crates.io/crates/carnix
 [pull request]: https://github.com/NixOS/nixpkgs/pull/39003
+[discussions]: https://nest.pijul.com/pmeunier/carnix:master/discussions
