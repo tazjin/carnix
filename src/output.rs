@@ -485,7 +485,6 @@ fn output<W: Write>(
     }
     nix_file.write_all(b"with buildRustCrateHelpers;\nlet inherit (lib.lists) fold;\n    inherit (lib.attrsets) recursiveUpdate;\nin\n")?;
     let mut names = BTreeSet::new();
-    let mut is_first_package = true;
     for (cra, _) in all_packages.iter() {
         names.insert(cra.name.clone());
     }
@@ -501,22 +500,28 @@ rec {\n
 ")?;
         for (cra, meta) in all_packages.iter() {
             if let Src::Crate { .. } = meta.src {
-                cra.output_package(root_prefix, &mut extra_crates_io, 2, &meta, is_first_package, &names, "")?;
-                is_first_package = false;
+                cra.output_package(root_prefix, &mut extra_crates_io, 2, &meta, &names, "")?;
             }
         }
         extra_crates_io.write_all(b"}\n")?;
     }
-    nix_file.write_all(b"let crates = cratesIO // rec {\n  ")?;
-    is_first_package = true;
+    nix_file.write_all(b"let crates = cratesIO")?;
+    let mut is_first = true;
     for (cra, meta) in all_packages.iter() {
         if let Src::Crate { .. } = meta.src {
         } else {
-            cra.output_package(root_prefix, &mut nix_file, 2, &meta, is_first_package, &names, "cratesIO.")?;
-            is_first_package = false;
+            if is_first {
+                writeln!(nix_file, " // rec {{")?;
+                is_first = false;
+            }
+            cra.output_package(root_prefix, &mut nix_file, 2, &meta, &names, "cratesIO.")?;
         }
     }
-    nix_file.write_all(b"\n}; in\n\n")?;
+    if is_first {
+        nix_file.write_all(b"; in\n")?;
+    } else {
+        nix_file.write_all(b"\n}; in\n\n")?;
+    }
 
     nix_file.write_all(b"rec {\n")?;
 
@@ -931,7 +936,6 @@ impl Crate {
         mut w: W,
         n_indent: usize,
         meta: &Meta,
-        is_first_package: bool,
         all_packages: &BTreeSet<String>,
         prefix: &str,
     ) -> Result<(), Error> {
@@ -953,7 +957,7 @@ impl Crate {
 
         write!(w, "{}crates.{}.\"{}\" = deps: {{ features?(features_.{}.\"{}\" deps {{}}) }}: buildRustCrate {{\n",
 
-               if is_first_package { "" } else { &indent },
+               indent,
                nix_name(&self.name),
                version,
                nix_name(&self.name),
