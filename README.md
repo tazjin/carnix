@@ -16,10 +16,9 @@ upstream repository once it is back online.
 repository][] was never updated after version `0.5` and is now offline
 entirely.~~
 
-~~There are still releases happening on [crates.io][] and I am simply
+There are still releases happening on [crates.io][] and I am simply
 mirroring these into this git repository to make the source code
-easily accessible, but for now there won't be any changes happening
-here directly.~~
+easily accessible.
 
 ## Reporting issues
 
@@ -82,6 +81,17 @@ and something about handling replaced packages in Cargo correctly.
 
 This version seems to contain minor changes to workspace handling
 again.
+
+### v0.8.0 - v0.8.5
+
+I'm not sure what changed in these versions yet. There may be some
+info in the `nixpkgs` repository, but I haven't gone hunting for it
+yet.
+
+Will update this once I've had time to figure it out.
+
+On a sidenote there really is no `0.8.2`, it goes straight from
+`0.8.1` to `0.8.3`.
 
 --------------
 
