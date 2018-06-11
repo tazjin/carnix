@@ -481,7 +481,7 @@ fn output<W: Write>(
     if standalone {
         nix_file.write_all(b"with import <nixpkgs> {};\n")?;
     } else {
-        nix_file.write_all(b"{ lib, buildPlatform, buildRustCrate, buildRustCrateHelpers, fetchgit }:\n")?;
+        nix_file.write_all(b"{ lib, buildPlatform, buildRustCrate, buildRustCrateHelpers, cratesIO, fetchgit }:\n")?;
     }
     nix_file.write_all(b"with buildRustCrateHelpers;\nlet inherit (lib.lists) fold;\n    inherit (lib.attrsets) recursiveUpdate;\nin\n")?;
     let mut names = BTreeSet::new();
@@ -543,14 +543,13 @@ rec {\n
         );
         writeln!(
             nix_file,
-            "  {}.\"{}\" = crates.crates.{}.\"{}\" deps;",
+            "  {} = crates.crates.{}.\"{}\" deps;",
             name,
-            version,
             name,
             version,
         )?;
 
-        write!(&mut all, "({}.\"{}\" {{}}) ", name, version)?;
+        write!(&mut all, "({} {{}}) ", name)?;
     }
 
     write!(&mut all, "]")?;
