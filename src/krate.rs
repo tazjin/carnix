@@ -41,6 +41,7 @@ pub struct Meta {
 #[derive(Debug, PartialEq, Eq, Default, Clone)]
 pub struct Dep {
     pub cr: Crate,
+    pub from_crates_io: bool,
     pub is_optional: bool,
     pub path: Option<PathBuf>,
     pub features: Vec<String>,
@@ -143,6 +144,7 @@ fn make_deps(base_path: &Path, deps: &toml::Value) -> BTreeMap<String, Dep> {
             };
             let mut dep = Dep {
                 cr: Crate::default(),
+                from_crates_io: false,
                 path: if let Some(path) = path {
                     Some(base_path.join(path))
                 } else {
@@ -159,6 +161,7 @@ fn make_deps(base_path: &Path, deps: &toml::Value) -> BTreeMap<String, Dep> {
             let name = name.to_string();
             let mut dep = Dep {
                 cr: Crate::default(),
+                from_crates_io: false,
                 path: None,
                 features: Vec::new(),
                 is_optional: false,

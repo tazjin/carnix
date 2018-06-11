@@ -12,7 +12,6 @@ use cfg;
 use krate::*;
 use cache::*;
 
-const PREAMBLE: &'static str = include_str!("preamble.nix");
 struct FeatName<'a>(&'a str);
 impl<'a> std::fmt::Display for FeatName<'a> {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
@@ -117,7 +116,10 @@ fn workspace_members(base_path: &Path, cargo_toml: &toml::Value) -> Option<Crate
                     let cra = get_package_version(&package);
                     debug!("mem path {:?}", path);
                     path.pop();
-                    workspace_members.insert(name.as_str().unwrap().to_owned(), (cra, path));
+                    workspace_members.insert(
+                        name.as_str().unwrap().to_owned(),
+                        (cra, path)
+                    );
                 }
             }
         }
@@ -481,40 +483,80 @@ fn output<W: Write>(
     } else {
         nix_file.write_all(b"{ lib, buildPlatform, buildRustCrate, fetchgit }:\n")?;
     }
-    nix_file.write_all(PREAMBLE.as_bytes())?;
+    nix_file.write_all(b"with buildRustCrateHelpers;\nlet inherit (lib.lists) fold;\n    inherit (lib.attrsets) recursiveUpdate;\nin\n")?;
     let mut names = BTreeSet::new();
     let mut is_first_package = true;
-    nix_file.write_all(b"rec {\n  ")?;
+    for (cra, _) in all_packages.iter() {
+        names.insert(cra.name.clone());
+    }
+
+    if standalone {
+        let mut extra_crates_io = std::io::BufWriter::new(std::fs::File::create("crates-io.nix")?);
+        extra_crates_io.write_all(b"{ lib, buildRustCrate, buildRustCrateHelpers }:
+with buildRustCrateHelpers;
+let inherit (lib.lists) fold;
+    inherit (lib.attrsets) recursiveUpdate;
+in
+rec {\n
+")?;
+        for (cra, meta) in all_packages.iter() {
+            if let Src::Crate { .. } = meta.src {
+                cra.output_package(root_prefix, &mut extra_crates_io, 2, &meta, is_first_package, &names, "")?;
+                is_first_package = false;
+            }
+        }
+        extra_crates_io.write_all(b"}\n")?;
+    }
+    nix_file.write_all(b"let crates = cratesIO // rec {\n  ")?;
+    is_first_package = true;
+    for (cra, meta) in all_packages.iter() {
+        if let Src::Crate { .. } = meta.src {
+        } else {
+            cra.output_package(root_prefix, &mut nix_file, 2, &meta, is_first_package, &names, "cratesIO.")?;
+            is_first_package = false;
+        }
+    }
+    nix_file.write_all(b"\n}; in\n\n")?;
+
+    nix_file.write_all(b"rec {\n")?;
+
+
+
+
+
     let mut all = b"[ ".to_vec();
     for (_, &(ref cra, _)) in workspace_members.iter() {
+
         let name = nix_name(&cra.name);
-        let full_name = format!(
-            "{}_{}_{}_{}{}{}",
-            name,
+        let version = format!(
+            "{}.{}.{}{}{}",
             cra.major,
             cra.minor,
             cra.patch,
-            if cra.subpatch.is_empty() { "" } else { "_" },
+            if cra.subpatch.is_empty() { "" } else { "-" },
             nix_name(&cra.subpatch)
         );
-        write!(
+        writeln!(
             nix_file,
-            "{} = f: {} {{ features = {}_features {{ {} = f; }}; }};\n  ",
-            name, full_name, full_name, full_name
+            "  {}.\"{}\" = crates.crates.{}.\"{}\" deps {{}};",
+            name,
+            version,
+            name,
+            version,
         )?;
-        write!(&mut all, "({} {{}}) ", name)?;
+
+        write!(&mut all, "({}.\"{}\" {{}}) ", name, version)?;
     }
+
     write!(&mut all, "]")?;
-    nix_file.write_all(b"__all = ")?;
+
+    nix_file.write_all(b"  __all = ")?;
     nix_file.write_all(&all)?;
-    nix_file.write_all(b";\n  ")?;
+    nix_file.write_all(b";\n")?;
+
+
     for (cra, meta) in all_packages.iter() {
-        cra.output_package(root_prefix, &mut nix_file, 2, &meta, is_first_package)?;
-        is_first_package = false;
-        names.insert(cra.name.clone());
-    }
-    for (cra, meta) in all_packages.iter() {
-        cra.output_package_call(&mut nix_file, 2, &meta, &names)?;
+        cra.output_package_call(&mut nix_file, 2, &meta)?;
     }
     nix_file.write_all(b"}\n")?;
     Ok(())
@@ -522,7 +564,7 @@ fn output<W: Write>(
 
 /// Add the dependencies from Cargo.lock.
 fn update_deps(cra: &Crate, deps: &toml::Value, meta: &mut Meta) {
-    let dep_re = Regex::new(r"^(\S*) (\d*)\.(\d*)\.(\d*)(-(\S*))?").unwrap();
+    let dep_re = Regex::new(r"^(\S*) (\d*)\.(\d*)\.(\d*)(-(\S*))?(.*)?").unwrap();
     let mut deps_names = BTreeSet::new();
     for dep in deps.as_array().unwrap() {
         let dep = dep.as_str().unwrap();
@@ -539,6 +581,11 @@ fn update_deps(cra: &Crate, deps: &toml::Value, meta: &mut Meta) {
                     .unwrap_or(String::new()),
             )
         };
+        let from_crates_io = if let Some(source) = cap.get(7) {
+            source.as_str() == " (registry+https://github.com/rust-lang/crates.io-index)"
+        } else {
+            false
+        };
         let name = cap.get(1).unwrap().as_str().to_string();
         debug!("update name = {:?}", name);
         if let Some(entry) = meta.dependencies.get_mut(&name) {
@@ -549,6 +596,7 @@ fn update_deps(cra: &Crate, deps: &toml::Value, meta: &mut Meta) {
             entry.cr.subpatch = d.clone();
             entry.cr.name = name.clone();
             entry.cr.found_in_lock = true;
+            entry.from_crates_io = from_crates_io;
         }
         if let Some(entry) = meta.build_dependencies.get_mut(&name) {
             debug!("meta.build_dependencies");
@@ -558,6 +606,7 @@ fn update_deps(cra: &Crate, deps: &toml::Value, meta: &mut Meta) {
             entry.cr.subpatch = d.clone();
             entry.cr.name = name.clone();
             entry.cr.found_in_lock = true;
+            entry.from_crates_io = from_crates_io;
         }
         for &mut (_, ref mut deps) in meta.target_dependencies.iter_mut() {
             if let Some(entry) = deps.get_mut(&name) {
@@ -568,6 +617,7 @@ fn update_deps(cra: &Crate, deps: &toml::Value, meta: &mut Meta) {
                 entry.cr.subpatch = d.clone();
                 entry.cr.name = name.clone();
                 entry.cr.found_in_lock = true;
+                entry.from_crates_io = from_crates_io;
             }
         }
     }
@@ -609,136 +659,112 @@ impl Crate {
         mut w: W,
         n_indent: usize,
         meta: &Meta,
-        all_packages: &BTreeSet<String>,
     ) -> Result<(), Error> {
         let mut indent = String::new();
         for _ in 0..n_indent {
             indent.push(' ');
         }
-        let full_name = format!(
-            "{}_{}_{}_{}{}{}",
-            nix_name(&self.name),
+        let version = format!(
+            "{}.{}.{}{}{}",
             self.major,
             self.minor,
             self.patch,
-            if self.subpatch.is_empty() { "" } else { "_" },
+            if self.subpatch.is_empty() { "" } else { "-" },
             nix_name(&self.subpatch)
         );
-        debug!("output_package_call {:?}", full_name);
+        // debug!("output_package_call {:?}", full_name);
+        let nix_name_ = nix_name(&self.name);
 
-        write!(
-            w,
-            "{}{} = {{ features?({}_features {{}}) }}: {}_ {{",
-            indent, full_name, full_name, full_name
-        )?;
-
+        write!(w, "{}deps.{}.\"{}\" = {{",
+               indent,
+               nix_name_,
+               version)?;
         let mut is_first = true;
-        let mut has_feature_deps = false;
-        if !meta.dependencies.is_empty() {
-            is_first = false;
-            write!(w, "\n{}  dependencies =", indent)?;
-            has_feature_deps |= print_deps(
-                &mut w,
-                &indent,
-                &full_name,
-                meta.dependencies
-                    .iter()
-                    .filter(|&(_, c)| {
-                        c.cr.found_in_lock && c.cr.name.len() > 0
-                            && all_packages.contains(&c.cr.name)
-                    })
-                    .map(|x| x.1),
-            )?;
-        }
-        if !meta.target_dependencies.is_empty() {
-            for &(ref target, ref dep) in meta.target_dependencies.iter() {
+        for deps in std::iter::once(&meta.dependencies)
+            .chain(std::iter::once(&meta.build_dependencies))
+            .chain(meta.target_dependencies.iter().map(|&(_, ref y)| y))
+        {
+            for (_, dep) in deps.iter().filter(|&(_, dep)| dep.cr.found_in_lock) {
+                debug!("outputting dep = {:?}", dep);
                 if is_first {
-                    write!(w, "\n{}  dependencies = (", indent)?;
-                } else {
-                    write!(w, "\n{}    ++ (", indent)?;
+                    writeln!(w, "")?;
                 }
-                debug!("target = {:?}", target);
-                let parsed = cfg::parse_target(target)?;
-                write!(w, "if ")?;
-                cfg::to_nix(&mut w, &parsed)?;
-                write!(w, " then")?;
-                has_feature_deps |= print_deps(
-                    &mut w,
-                    &indent,
-                    &full_name,
-                    dep.iter()
-                        .filter(|&(_, c)| {
-                            c.cr.found_in_lock && c.cr.name.len() > 0
-                                && all_packages.contains(&c.cr.name)
-                        })
-                        .map(|x| x.1),
-                )?;
-                write!(w, " else [])")?;
                 is_first = false;
+                if self.subpatch.len() > 0 {
+                    writeln!(w,"{}  {} = \"{}.{}.{}-{}\";",
+                             indent,
+                             nix_name(&dep.cr.name),
+                             dep.cr.major, dep.cr.minor, dep.cr.patch,
+                             dep.cr.subpatch
+                    )?
+                } else {
+                    writeln!(w,"{}  {} = \"{}.{}.{}\";",
+                             indent,
+                             nix_name(&dep.cr.name),
+                             dep.cr.major, dep.cr.minor, dep.cr.patch,
+                    )?
+                };
             }
         }
-        if !meta.dependencies.is_empty() || !meta.target_dependencies.is_empty() {
-            write!(w, ";")?;
+        if !is_first {
+            writeln!(w, "{}}};", indent)?;
+        } else {
+            writeln!(w, "}};")?;
+        }
+        Ok(())
+    }
+
+    pub fn output_package_features<W: Write>(
+        &self,
+        mut w: W,
+        n_indent: usize,
+        meta: &Meta,
+        prefix: &str,
+    ) -> Result<(), Error> {
+
+        let mut indent = String::new();
+        for _ in 0..n_indent {
+            indent.push(' ');
         }
 
-        if !meta.build_dependencies.is_empty() {
-            write!(w, "\n{}  buildDependencies =", indent)?;
-            print_deps(
-                &mut w,
-                &indent,
-                &full_name,
-                meta.build_dependencies
-                    .iter()
-                    .filter(|&(_, c)| {
-                        c.cr.found_in_lock && c.cr.name.len() > 0
-                            && all_packages.contains(&c.cr.name)
-                    })
-                    .map(|x| x.1),
-            )?;
-            write!(w, ";")?;
-        }
-        if !meta.declared_features.is_empty() || has_feature_deps {
-            write!(
-                w,
-                "\n{}  features = mkFeatures (features.{} or {{}});",
-                indent, full_name
-            )?;
-        }
-        if !meta.dependencies.is_empty() || !meta.declared_features.is_empty()
-            || !meta.target_dependencies.is_empty()
-        {
-            write!(w, "\n{}", indent)?;
-        }
-        writeln!(w, "}};")?;
+        let version = if self.subpatch.len() > 0 {
+            format!(
+                "{}.{}.{}-{}",
+                self.major, self.minor, self.patch, self.subpatch
+            )
+        } else {
+            format!("{}.{}.{}", self.major, self.minor, self.patch)
+        };
 
         writeln!(
             w,
-            "{}{}_features = f: updateFeatures f (rec {{",
-            indent, full_name
+            "{}features_.{}.\"{}\" = deps: f: updateFeatures f (rec {{",
+            indent, nix_name(&self.name), version
         )?;
         let mut output_features = BTreeMap::new();
-        let full_name_default = format!("{}.default", full_name);
+        let nix_name_ = nix_name(&self.name);
+        let full_name_default = format!("{}.\"{}\".default", nix_name_, version);
         if meta.use_default_features == Some(false) {
-            // let e = output_features.entry(format!("{}.default", full_name)).or_insert(Vec::new());
-            // e.push("false".to_string());
         } else {
             let e = output_features
                 .entry(full_name_default.clone())
                 .or_insert(Vec::new());
-            e.push(format!("(f.{}.default or true)", full_name))
+            e.push(format!("(f.{}.\"{}\".default or true)", nix_name_, version))
         }
         if !meta.implied_features.is_empty() {
             for feat in meta.implied_features.iter() {
-                let dep = format!("{}.{}", full_name, FeatName(&feat.dep_feature));
+                let dep = format!("{}.\"{}\".{}", nix_name_, version, FeatName(&feat.dep_feature));
                 let mut e = output_features.entry(dep).or_insert(Vec::new());
                 e.push(format!(
-                    "(f.{}.{} or false)",
-                    full_name,
+                    "(f.{}.\"{}\".{} or false)",
+                    nix_name_,
+                    version,
                     FeatName(&feat.feature)
                 ));
                 e.push(format!(
-                    "({}.{} or false)",
-                    full_name,
+                    "({}.\"{}\".\"{}\" or false)",
+                    nix_name_,
+                    version,
                     FeatName(&feat.feature)
                 ));
             }
@@ -752,18 +778,15 @@ impl Crate {
         {
             for (_, dep) in deps.iter().filter(|&(_, dep)| dep.cr.found_in_lock) {
                 debug!("outputting dep = {:?}", dep);
+                let dep_name = format!(
+                    "{}.\"${{deps.{}.\"{}\".{}}}\"",
+                    nix_name(&dep.cr.name),
+                    nix_name_,
+                    version,
+                    nix_name(&dep.cr.name),
+                );
                 for feat in dep.features.iter() {
-                    let dep = format!(
-                        "{}_{}_{}_{}{}{}.{}",
-                        nix_name(&dep.cr.name),
-                        dep.cr.major,
-                        dep.cr.minor,
-                        dep.cr.patch,
-                        if dep.cr.subpatch.is_empty() { "" } else { "_" },
-                        nix_name(&dep.cr.subpatch),
-                        FeatName(&feat),
-                    );
-                    let mut e = output_features.entry(dep).or_insert(Vec::new());
+                    let mut e = output_features.entry(format!("{}.\"{}\"", dep_name, feat)).or_insert(Vec::new());
                     e.push("true".to_string());
                 }
 
@@ -771,39 +794,32 @@ impl Crate {
                     for feat in dep.conditional_features.iter() {
                         if !seen.contains(&(&dep.cr.name, &feat.feature)) {
                             let dep_name = format!(
-                                "{}_{}_{}_{}{}{}.{}",
+                                "{}.\"{}.{}.{}{}{}\".{}",
                                 nix_name(&dep.cr.name),
                                 dep.cr.major,
                                 dep.cr.minor,
                                 dep.cr.patch,
-                                if dep.cr.subpatch.is_empty() { "" } else { "_" },
+                                if dep.cr.subpatch.is_empty() { "" } else { "-" },
                                 nix_name(&dep.cr.subpatch),
                                 FeatName(&feat.dep_feature),
                             );
                             let mut e = output_features.entry(dep_name).or_insert(Vec::new());
                             e.push(format!(
-                                "({}.{} or false)",
-                                full_name,
+                                "({}.\"{}\".\"{}\" or false)",
+                                nix_name_,
+                                version,
                                 FeatName(&feat.feature)
                             ));
                             e.push(format!(
-                                "(f.{}.{} or false)",
-                                full_name,
+                                "(f.\"{}\".\"{}\".\"{}\" or false)",
+                                nix_name_,
+                                version,
                                 FeatName(&feat.feature)
                             ));
                             seen.insert((&dep.cr.name, &feat.feature));
                         }
                     }
                 }
-                let dep_name = format!(
-                    "{}_{}_{}_{}{}{}",
-                    nix_name(&dep.cr.name),
-                    dep.cr.major,
-                    dep.cr.minor,
-                    dep.cr.patch,
-                    if dep.cr.subpatch.is_empty() { "" } else { "_" },
-                    nix_name(&dep.cr.subpatch)
-                );
                 if !dep.default_features {
                     if default.get(&dep_name).is_none() {
                         default.insert(dep_name, false);
@@ -819,23 +835,63 @@ impl Crate {
             e.push(format!("{}", *default));
         }
 
+        let mut current_prefix = "";
+        let mut current_attrs = Vec::new();
+
         for (a, b) in output_features.iter() {
+
+            if !b.is_empty() {
+                if current_prefix.is_empty() || !a.starts_with(current_prefix) {
+                    // change current prefix
+                    if !current_prefix.is_empty() {
+                        // close previous prefix
+                        if current_attrs.len() == 1 {
+                            writeln!(w, "{}  {}.{}", indent, current_prefix.trim_right_matches('.'), current_attrs.pop().unwrap())?;
+                        } else if current_attrs.len() > 1 {
+                            writeln!(w, "{}  {} = fold recursiveUpdate {{}} [", indent, current_prefix.trim_right_matches('.'))?;
+                            for x in current_attrs.drain(..) {
+                                writeln!(w, "{}    {{ {} }}", indent, x)?;
+                            }
+                            writeln!(w, "{}  ];", indent)?;
+                        }
+                    }
+                    // open new prefix
+                    if let Some(i) = a.find('.') {
+                        current_prefix = a.split_at(i+1).0;
+                    }
+                }
+            }
+
             if b.len() == 0 {
             } else if b.len() == 1 {
+
                 if b[0] == "true" || a == &full_name_default {
-                    writeln!(w, "{}  {} = {};", indent, a, b[0])?
+                    current_attrs.push(format!("{} = {};", a.trim_left_matches(current_prefix), b[0]))
                 } else if b[0] != "false" {
-                    writeln!(w, "{}  {} = (f.{} or false) || {};", indent, a, a, b[0])?
+                    current_attrs.push(format!("{} = (f.{} or false) || {};", a.trim_left_matches(current_prefix), a, b[0]))
                 } else if a.ends_with(".default") {
                     // b[0] == false here
-                    writeln!(w, "{}  {} = (f.{} or false);", indent, a, a)?
+                    current_attrs.push(format!("{} = (f.{} or false);", a.trim_left_matches(current_prefix), a))
                 }
             } else {
-                write!(w, "{}  {} =\n{}    (f.{} or false)", indent, a, indent, a)?;
+                let mut x = format!("{} =\n{}      (f.{} or false)", a.trim_left_matches(current_prefix), indent, a);
                 for bb in b.iter() {
-                    write!(w, " ||\n{}    {}", indent, bb)?;
+                    x.push_str(&format!(" ||\n{}      {}", indent, bb));
                 }
-                writeln!(w, ";")?;
+                x.push_str(&format!(";"));
+                current_attrs.push(x)
+            }
+        }
+        if !current_prefix.is_empty() {
+            // close previous prefix
+            if current_attrs.len() == 1 {
+                writeln!(w, "{}  {}.{}", indent, current_prefix.trim_right_matches('.'), current_attrs.pop().unwrap())?;
+            } else if current_attrs.len() > 1 {
+                writeln!(w, "{}  {} = fold recursiveUpdate {{}} [", indent, current_prefix.trim_right_matches('.'))?;
+                for x in current_attrs.drain(..) {
+                    writeln!(w, "{}    {{ {} }}", indent, x)?;
+                }
+                writeln!(w, "{}  ];", indent)?;
             }
         }
 
@@ -846,25 +902,25 @@ impl Crate {
             .chain(meta.target_dependencies.iter().map(|&(_, ref y)| ("", y)))
         {
             for (_, dep) in deps.iter().filter(|&(_, c)| {
-                c.cr.found_in_lock && c.cr.name.len() > 0 && all_packages.contains(&c.cr.name)
+                c.cr.found_in_lock && c.cr.name.len() > 0
             }) {
                 at_least_one = true;
                 write!(
                     w,
-                    " {}_{}_{}_{}{}{}_features",
+                    "\n{}  ({}features_.{}.\"${{deps.\"{}\".\"{}\".\"{}\"}}\" deps)",
+                    indent,
+                    if dep.from_crates_io { prefix } else { "" },
                     nix_name(&dep.cr.name),
-                    dep.cr.major,
-                    dep.cr.minor,
-                    dep.cr.patch,
-                    if dep.cr.subpatch.is_empty() { "" } else { "_" },
-                    nix_name(&dep.cr.subpatch)
-                )?
+                    nix_name_,
+                    version,
+                    nix_name(&dep.cr.name),
+                )?;
             }
         }
         if at_least_one {
-            writeln!(w, " ];")?;
+            writeln!(w, "\n{}];\n\n", indent)?;
         } else {
-            writeln!(w, "];")?;
+            writeln!(w, "];\n\n")?;
         }
         Ok(())
     }
@@ -876,16 +932,15 @@ impl Crate {
         n_indent: usize,
         meta: &Meta,
         is_first_package: bool,
-    ) -> Result<(), std::io::Error> {
+        all_packages: &BTreeSet<String>,
+        prefix: &str,
+    ) -> Result<(), Error> {
         let mut indent = String::new();
         for _ in 0..n_indent {
             indent.push(' ');
         }
-        write!(w, "{}{}_{}_{}_{}{}{}_ = {{ dependencies?[], buildDependencies?[], features?[] }}: buildRustCrate {{\n", if is_first_package { "" } else { &indent }, nix_name(&self.name), self.major, self.minor, self.patch,
-               if self.subpatch.is_empty() {""} else {"_"},
-               nix_name(&self.subpatch))?;
-        // writeln!(w, "mkRustCrate {{")?;
-        writeln!(w, "{}  crateName = \"{}\";", indent, self.name)?;
+
+        let nix_name_ = nix_name(&self.name);
         let version = if self.subpatch.len() > 0 {
             format!(
                 "{}.{}.{}-{}",
@@ -894,6 +949,18 @@ impl Crate {
         } else {
             format!("{}.{}.{}", self.major, self.minor, self.patch)
         };
+
+
+        write!(w, "{}crates.{}.\"{}\" = deps: {{ features?(features_.{}.\"{}\" deps {{}}) }}: buildRustCrate {{\n",
+
+               if is_first_package { "" } else { &indent },
+               nix_name(&self.name),
+               version,
+               nix_name(&self.name),
+               version,
+        )?;
+
+        writeln!(w, "{}  crateName = \"{}\";", indent, self.name)?;
 
         writeln!(w, "{}  version = \"{}\";", indent, version)?;
 
@@ -918,6 +985,14 @@ impl Crate {
                 } else {
                     &path
                 };
+                let workspace_member =
+                    workspace_member.as_ref().map(|x| {
+                        if let Ok(ws) = x.strip_prefix(root_prefix) {
+                            ws
+                        } else {
+                            &x
+                        }
+                    });
                 let s = path.to_string_lossy();
 
                 let mut filter_source = String::new();
@@ -946,7 +1021,7 @@ impl Crate {
 
                 writeln!(w, "{}  src = {};", indent, filter_source)?;
 
-                if let Some(ref ws) = *workspace_member {
+                if let Some(ref ws) = workspace_member {
                     writeln!(
                         w,
                         "{}  workspace_member = \"{}\";",
@@ -998,12 +1073,93 @@ impl Crate {
         if meta.build.len() > 0 {
             writeln!(w, "{}  build = \"{}\";", indent, meta.build)?;
         }
-        writeln!(
-            w,
-            "{}  inherit dependencies buildDependencies features;",
-            indent
-        )?;
+
+
+
+        let mut is_first = true;
+        let mut has_feature_deps = false;
+        if !meta.dependencies.is_empty() {
+            is_first = false;
+            write!(w, "{}  dependencies =", indent)?;
+            has_feature_deps |= print_deps(
+                &mut w,
+                &indent,
+                &nix_name_,
+                &version,
+                prefix,
+                meta.dependencies
+                    .iter()
+                    .filter(|&(_, c)| {
+                        c.cr.found_in_lock && c.cr.name.len() > 0
+                            && all_packages.contains(&c.cr.name)
+                    })
+                    .map(|x| x.1),
+            )?;
+        }
+        if !meta.target_dependencies.is_empty() {
+            for &(ref target, ref dep) in meta.target_dependencies.iter() {
+                if is_first {
+                    write!(w, "{}  dependencies = (", indent)?;
+                } else {
+                    write!(w, "\n{}    ++ (", indent)?;
+                }
+                debug!("target = {:?}", target);
+                let parsed = cfg::parse_target(target)?;
+                write!(w, "if ")?;
+                cfg::to_nix(&mut w, &parsed)?;
+                write!(w, " then")?;
+                has_feature_deps |= print_deps(
+                    &mut w,
+                    &indent,
+                    &nix_name_,
+                    &version,
+                    prefix,
+                    dep.iter()
+                        .filter(|&(_, c)| {
+                            c.cr.found_in_lock && c.cr.name.len() > 0
+                                && all_packages.contains(&c.cr.name)
+                        })
+                        .map(|x| x.1),
+                )?;
+                write!(w, " else [])")?;
+                is_first = false;
+            }
+        }
+        if !meta.dependencies.is_empty() || !meta.target_dependencies.is_empty() {
+            writeln!(w, ";")?;
+        }
+
+        if !meta.build_dependencies.is_empty() {
+            write!(w, "\n{}  buildDependencies =", indent)?;
+            print_deps(
+                &mut w,
+                &indent,
+                &nix_name_,
+                &version,
+                prefix,
+                meta.build_dependencies
+                    .iter()
+                    .filter(|&(_, c)| {
+                        c.cr.found_in_lock && c.cr.name.len() > 0
+                            && all_packages.contains(&c.cr.name)
+                    })
+                    .map(|x| x.1),
+            )?;
+            writeln!(w, ";")?;
+        }
+        if !meta.declared_features.is_empty() || has_feature_deps {
+            write!(
+                w,
+                "{}  features = mkFeatures (features.{}.\"{}\" or {{}});\n",
+                indent,
+                nix_name_,
+                version
+            )?;
+        }
         writeln!(w, "{}}};", indent)?;
+
+
+        self.output_package_features(w, n_indent, meta, prefix)?;
         Ok(())
     }
 }
@@ -1011,10 +1167,12 @@ impl Crate {
 fn print_deps<'a, W: Write, I: Iterator<Item = &'a Dep>>(
     mut w: W,
     indent: &str,
-    full_name: &str,
+    nix_name_: &str,
+    version: &str,
+    prefix: &str,
     deps: I,
 ) -> Result<bool, std::io::Error> {
-    write!(w, " mapFeatures features ([")?;
+    writeln!(w, " mapFeatures features ([")?;
     let mut at_least_one = false;
     let mut feature_deps = Vec::new();
     for i in deps {
@@ -1023,35 +1181,45 @@ fn print_deps<'a, W: Write, I: Iterator<Item = &'a Dep>>(
         if i.is_optional {
             feature_deps.push(i)
         } else {
-            write!(
+            writeln!(
                 w,
-                " {}_{}_{}_{}{}{}",
+                "{}    ({}crates.\"{}\".\"${{deps.\"{}\".\"{}\".\"{}\"}}\" deps)",
+                indent,
+                if i.from_crates_io { prefix } else { "" },
                 nix_name(&i.cr.name),
-                i.cr.major,
-                i.cr.minor,
-                i.cr.patch,
-                if i.cr.subpatch.is_empty() { "" } else { "_" },
-                nix_name(&i.cr.subpatch)
+                nix_name_,
+                version,
+                nix_name(&i.cr.name),
             )?;
         }
     }
 
     if at_least_one {
-        write!(w, " ]")?;
+        write!(w, "{}  ]", indent)?;
     } else {
         write!(w, "]")?;
     }
     for i in feature_deps.iter() {
-        write!(
-            w,
-            "\n{}    ++ (if features.{}.{} or false then [ {}_{}_{}_{} ] else [])",
-            indent,
-            full_name,
-            FeatName(&i.cr.name),
-            nix_name(&i.cr.name),
+
+        let i_version = format!(
+            "{}.{}.{}{}{}",
             i.cr.major,
             i.cr.minor,
-            i.cr.patch
+            i.cr.patch,
+            if i.cr.subpatch.is_empty() { "" } else { "-" },
+            nix_name(&i.cr.subpatch)
+        );
+
+        write!(
+            w,
+            "\n{}    ++ (if features.{}.\"{}\".{} or false then [ ({}crates.{}.\"{}\" deps) ] else [])",
+            indent,
+            nix_name_,
+            version,
+            FeatName(&i.cr.name),
+            if i.from_crates_io { prefix } else { "" },
+            nix_name(&i.cr.name),
+            i_version
         )?;
     }
     write!(w, ")")?;
