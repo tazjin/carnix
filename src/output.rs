@@ -489,7 +489,7 @@ fn output<W: Write>(
         names.insert(cra.name.clone());
     }
 
-    if standalone {
+    {
         let mut extra_crates_io = std::io::BufWriter::new(std::fs::File::create("crates-io.nix")?);
         extra_crates_io.write_all(b"{ lib, buildRustCrate, buildRustCrateHelpers }:
 with buildRustCrateHelpers;
@@ -505,7 +505,12 @@ rec {\n
         }
         extra_crates_io.write_all(b"}\n")?;
     }
-    nix_file.write_all(b"let crates = cratesIO")?;
+    if standalone {
+        nix_file.write_all(b"let cratesIO = callPackage ./crates-io.nix { };
+    crates = cratesIO")?;
+    } else {
+        nix_file.write_all(b"let crates = cratesIO")?;
+    }
     let mut is_first = true;
     for (cra, meta) in all_packages.iter() {
         if let Src::Crate { .. } = meta.src {
