@@ -1,2 +1,0 @@
-language: nix
-script: nix-build -A carnix_0_7_2
